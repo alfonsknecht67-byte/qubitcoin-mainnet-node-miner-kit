@@ -1,5 +1,10 @@
 # Qubitcoin Mainnet Node & Miner Kit
 
+## Choose your operating system
+
+Use one source package: [Windows guide (10/11)](PLATFORMS.md#windows) or [Ubuntu/Linux guide](PLATFORMS.md#ubuntu-linux). Windows 11 is not a hard requirement. GPU drivers, Python and optional WSL/node requirements still apply.
+
+
 **Independent community kit · 0.1.0 · Qubitcoin MAINNET / QHash**
 
 Choose **Miner only**, **Node only**, or **Node + Miner** from one menu.

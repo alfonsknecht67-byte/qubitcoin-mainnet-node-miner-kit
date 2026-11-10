@@ -1,5 +1,10 @@
 # Optional Qubitcoin mainnet node
 
+## Choose your operating system
+
+Use one source package: [Windows guide (10/11)](PLATFORMS.md#windows) or [Ubuntu/Linux guide](PLATFORMS.md#ubuntu-linux). Windows 11 is not a hard requirement. GPU drivers, Python and optional WSL/node requirements still apply.
+
+
 The node is optional. Pool mining works without it. Node only verifies the chain;
 Node + Miner runs the independent node alongside GPU pool mining.
 
