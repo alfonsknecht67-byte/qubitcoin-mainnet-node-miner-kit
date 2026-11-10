@@ -1,0 +1,46 @@
+{
+  "reviewed_on": "2026-11-10",
+  "kit_version": "0.1.0",
+  "network": "Qubitcoin mainnet",
+  "algorithm": "qhash",
+  "miner": {
+    "name": "WildRig Multi",
+    "version": "0.52.1",
+    "upstream": "https://github.com/andru-kun/wildrig-multi",
+    "release": "https://github.com/andru-kun/wildrig-multi/releases/tag/0.52.1",
+    "qhash_developer_fee_percent": 2,
+    "checksums_source": "GitHub release API asset.digest SHA-256; official archives independently downloaded and matched",
+    "windows_sha256": "60f015dc1eeb20aafe43bbedaa51675063f497585fc881fc5ca5eb18a29f17e6",
+    "linux_sha256": "33587b9968b1d631b1574db8ea9c5cc50ef966e653fec4bcbb3001a6ad9dfdc0",
+    "bundled_in_kit": false,
+    "executed_during_validation": false,
+    "extracted_by_end_user": "Only the exact executable; never vendor example scripts or their payout addresses"
+  },
+  "validation": {
+    "offline_tests": true,
+    "official_archive_integrity": true,
+    "hardware_mining": false,
+    "accepted_pool_shares": false,
+    "payouts": false,
+    "node_or_miner_service_changes": false
+  },
+  "pool_sources": [
+    "https://qubitcoin.herominers.com/how-to-mine-qubitcoin-qtc/",
+    "https://veinpool.fr/en/coin/qubit",
+    "https://qtc.luckypool.io/",
+    "WildRig Multi 0.52.1 original Qubitcoin LuckyPool example endpoint"
+  ],
+  "address_parameters": "https://github.com/super-quantum/qubitcoin/blob/master/src/kernel/chainparams.cpp",
+  "address_test_vectors": "https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki",
+  "node": {
+    "upstream": "https://github.com/super-quantum/qubitcoin",
+    "commit": "6c4f95a4c9b8975526fc7cb2eb32c721ab178cde",
+    "cpu_patch_sha256": "760cba89fd0dbe1d2072bd48b4f4210912eca8f9d6d2680ed428f654dd013e22",
+    "official_binary_release": false,
+    "wallet_enabled": false,
+    "windows_distro": "QTC-Mainnet-Kit",
+    "local_rpc_port": 19542,
+    "writing_rpc_methods": [],
+    "starts_during_setup": false
+  }
+}

@@ -1,0 +1,16 @@
+name: Source and safety checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check source package and offline behavior
+        run: |
+          python verify_source.py
+          python -m unittest discover -p "test_*.py" -v

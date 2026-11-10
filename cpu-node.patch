@@ -1,0 +1,382 @@
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 3f0168ea9..635d2f144 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -8,8 +8,8 @@ print-%: FORCE
+ 
+ DIST_SUBDIRS = secp256k1
+ 
+-CUSTATEVEC_LDFLAGS = -L$(CUDA_PATH)/lib64 -L$(CUQUANTUM_ROOT)/lib -lcustatevec_static -lcublas -lcudart
+-CUSTATEVEC_CXXFLAGS = -I$(CUDA_PATH)/include -I$(CUQUANTUM_ROOT)/include
++CUSTATEVEC_LDFLAGS =
++CUSTATEVEC_CXXFLAGS =
+ 
+ AM_LDFLAGS = $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(SANITIZER_LDFLAGS) $(CORE_LDFLAGS)
+ AM_CXXFLAGS = $(CORE_CXXFLAGS) $(DEBUG_CXXFLAGS) $(HARDENED_CXXFLAGS) $(WARN_CXXFLAGS) $(NOWARN_CXXFLAGS) $(ERROR_CXXFLAGS) $(SANITIZER_CXXFLAGS) $(CUSTATEVEC_CXXFLAGS)
+diff --git a/src/crypto/qhash.cpp b/src/crypto/qhash.cpp
+index 3187fb38f..d472da621 100644
+--- a/src/crypto/qhash.cpp
++++ b/src/crypto/qhash.cpp
+@@ -1,129 +1,120 @@
++#include <algorithm>
++#include <limits>
+ #include <array>
+ #include <crypto/qhash.h>
+-#include <cuda_runtime_api.h>
++#include <cmath>
++#include <complex>
+ #include <format>
+ #include <numbers>
+ #include <numeric>
+ #include <stdexcept>
+ 
+-#define HANDLE_CUSTATEVEC_ERROR(x)                                                          \
+-    {                                                                                       \
+-        const auto err = x;                                                                 \
+-        if (err != CUSTATEVEC_STATUS_SUCCESS) {                                             \
+-            throw std::runtime_error(std::format("Error: {} in line {}\n",                  \
+-                                                 custatevecGetErrorString(err), __LINE__)); \
+-        }                                                                                   \
+-    };
+-
+-#define HANDLE_CUDA_ERROR(x)                                                          \
+-    {                                                                                 \
+-        const auto err = x;                                                           \
+-        if (err != cudaSuccess) {                                                     \
+-            throw std::runtime_error(std::format("Error: {} in line {}\n",            \
+-                                                 cudaGetErrorString(err), __LINE__)); \
+-        }                                                                             \
+-    };
+-
+-static const cuDoubleComplex matrixX[] = {
+-    {0.0, 0.0}, {1.0, 0.0}, {1.0, 0.0}, {0.0, 0.0}};
+-
+-QHash::QHash(uint32_t nTime, QHashRules rules) : nTime(nTime), rules(rules), ctx(), handle(), dStateVec(), extraSize(0), extra(nullptr)
++QHash::QHash(uint32_t nTime, QHashRules rules)
++    : nTime(nTime), rules(rules), ctx(), stateVec(stateVecSize)
+ {
+-    custatevecCreate(&handle);
+-
+-    // TODO: May overflow on 32-bit systems
+-    const std::size_t stateVecSizeBytes = (1 << nQubits) * sizeof(cuDoubleComplex);
+-
+-    HANDLE_CUDA_ERROR(cudaMalloc(reinterpret_cast<void**>(&dStateVec), stateVecSizeBytes));
+-    HANDLE_CUSTATEVEC_ERROR(custatevecInitializeStateVector(handle, dStateVec, CUDA_C_64F,
+-                                                            nQubits,
+-                                                            CUSTATEVEC_STATE_VECTOR_TYPE_ZERO));
+-
+-    HANDLE_CUSTATEVEC_ERROR(custatevecApplyMatrixGetWorkspaceSize(handle, CUDA_C_64F, nQubits,
+-                                                                  matrixX, CUDA_C_64F,
+-                                                                  CUSTATEVEC_MATRIX_LAYOUT_ROW,
+-                                                                  0, 1, 1,
+-                                                                  CUSTATEVEC_COMPUTE_DEFAULT,
+-                                                                  &extraSize));
+-    if (extraSize) HANDLE_CUDA_ERROR(cudaMalloc(&extra, extraSize));
++    resetStateVector();
+ }
+ 
+-std::array<double, QHash::nQubits> QHash::runSimulation(const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data)
++void QHash::resetStateVector()
+ {
+-    runCircuit(data);
++    std::fill(stateVec.begin(), stateVec.end(), Complex{0.0, 0.0});
++    stateVec[0] = Complex{1.0, 0.0};
++}
+ 
+-    auto expectations = getExpectations();
++void QHash::applyPauliYRotation(double theta, size_t qubit)
++{
++    const double c = std::cos(theta);
++    const double s = std::sin(theta);
++    const size_t mask = size_t{1} << qubit;
+ 
+-    return expectations;
++    for (size_t base = 0; base < stateVecSize; base += 2 * mask) {
++        for (size_t offset = 0; offset < mask; ++offset) {
++            const size_t i = base + offset;
++            const size_t j = i + mask;
++
++            const Complex a0 = stateVec[i];
++            const Complex a1 = stateVec[j];
++
++            stateVec[i] = c * a0 + s * a1;
++            stateVec[j] = -s * a0 + c * a1;
++        }
++    }
++}
++
++void QHash::applyPauliZRotation(double theta, size_t qubit)
++{
++    const double c = std::cos(theta);
++    const double s = std::sin(theta);
++    const Complex phase0{c, s};
++    const Complex phase1{c, -s};
++    const size_t mask = size_t{1} << qubit;
++
++    for (size_t i = 0; i < stateVecSize; ++i) {
++        if (i & mask)
++            stateVec[i] *= phase1;
++        else
++            stateVec[i] *= phase0;
++    }
+ }
+ 
+-void QHash::runCircuit(const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data)
++void QHash::applyCNOT(size_t control, size_t target)
++{
++    const size_t controlMask = size_t{1} << control;
++    const size_t targetMask = size_t{1} << target;
++
++    const size_t controlTargetMask = controlMask | targetMask;
++
++    for (size_t base = 0; base < stateVecSize; ++base) {
++        if ((base & controlTargetMask) == controlMask) {
++            const size_t j = base | targetMask;
++            std::swap(stateVec[base], stateVec[j]);
++        }
++    }
++}
++
++std::array<double, QHash::nQubits> QHash::runSimulation(
++    const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data)
++{
++    runCircuit(data);
++    return getExpectations();
++}
++
++void QHash::runCircuit(
++    const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data)
+ {
+-    static const custatevecPauli_t pauliY[] = {CUSTATEVEC_PAULI_Y};
+-    static const custatevecPauli_t pauliZ[] = {CUSTATEVEC_PAULI_Z};
+-    const int angleOffset = (rules == QHashRules::Current || nTime >= 1758762000) ? 1 : 0;
+     for (std::size_t l{0}; l < nLayers; ++l) {
+         for (std::size_t i{0}; i < nQubits; ++i) {
+-            const int32_t target = i;
+-            // RY gates
+-            HANDLE_CUSTATEVEC_ERROR(custatevecApplyPauliRotation(
+-                handle, dStateVec, CUDA_C_64F, nQubits,
+-                -(2 * data[(2 * l * nQubits + i) % data.size()] + angleOffset) * std::numbers::pi / 32, pauliY,
+-                &target, 1, nullptr, nullptr, 0));
+-            // RZ gates
+-            HANDLE_CUSTATEVEC_ERROR(custatevecApplyPauliRotation(
+-                handle, dStateVec, CUDA_C_64F, nQubits,
+-                -(2 * data[((2 * l + 1) * nQubits + i) % data.size()] + angleOffset) * std::numbers::pi / 32, pauliZ,
+-                &target, 1, nullptr, nullptr, 0));
++            const double thetaY =
++                -(2.0 * data[(2 * l * nQubits + i) % data.size()]
++                  + ((rules == QHashRules::Current || nTime >= 1758762000) ? 1 : 0))
++                * std::numbers::pi / 32.0;
++
++            const double thetaZ =
++                -(2.0 * data[((2 * l + 1) * nQubits + i) % data.size()]
++                  + ((rules == QHashRules::Current || nTime >= 1758762000) ? 1 : 0))
++                * std::numbers::pi / 32.0;
++
++            applyPauliYRotation(thetaY, i);
++            applyPauliZRotation(thetaZ, i);
+         }
+ 
+-        for (std::size_t i{0}; i < nQubits - 1; ++i) {
+-            const int32_t control = i;
+-            const int32_t target = control + 1;
+-
+-            // CNOT gates, may be faster with applymatrix
+-            HANDLE_CUSTATEVEC_ERROR(custatevecApplyMatrix(handle, dStateVec, CUDA_C_64F, nQubits,
+-                                                          matrixX, CUDA_C_64F,
+-                                                          CUSTATEVEC_MATRIX_LAYOUT_ROW, 0, &target,
+-                                                          1, &control, nullptr, 1,
+-                                                          CUSTATEVEC_COMPUTE_DEFAULT, extra,
+-                                                          extraSize));
+-        }
++        for (std::size_t i{0}; i < nQubits - 1; ++i)
++            applyCNOT(i, i + 1);
+     }
+ }
+ 
+ std::array<double, QHash::nQubits> QHash::getExpectations()
+ {
+-    static const custatevecPauli_t pauliZ[] = {CUSTATEVEC_PAULI_Z};
+-    static const auto pauliExpectations = [] {
+-        std::array<const custatevecPauli_t*, nQubits> arr;
+-        arr.fill(pauliZ);
+-        return arr;
+-    }();
+-    static const auto basisBits = [] {
+-        std::array<int32_t, nQubits> arr;
+-        std::iota(arr.begin(), arr.end(), 0);
+-        return arr;
+-    }();
+-    static const auto basisBitsArr = [] {
+-        std::array<const int32_t*, nQubits> arr;
+-        std::transform(basisBits.begin(), basisBits.end(), arr.begin(), [](auto& x) { return &x; });
+-        return arr;
+-    }();
+-    static const auto nBasisBits = [] {
+-        std::array<uint32_t, nQubits> arr;
+-        arr.fill(1);
+-        return arr;
+-    }();
+-
+-    std::array<double, nQubits> expectations;
+-
+-
+-    HANDLE_CUSTATEVEC_ERROR(custatevecComputeExpectationsOnPauliBasis(
+-        handle, dStateVec, CUDA_C_64F, nQubits, expectations.data(),
+-        const_cast<const custatevecPauli_t**>(pauliExpectations.data()), nQubits,
+-        const_cast<const int32_t**>(basisBitsArr.data()), nBasisBits.data()));
++    std::array<double, nQubits> expectations{};
++
++    for (size_t i = 0; i < stateVecSize; ++i) {
++        const double probability = std::norm(stateVec[i]);
+ 
++        for (std::size_t qubit = 0; qubit < nQubits; ++qubit) {
++            const size_t mask = size_t{1} << qubit;
++            expectations[qubit] += (i & mask) ? -probability : probability;
++        }
++    }
+ 
+     return expectations;
+ }
+@@ -143,24 +134,26 @@ void QHash::Finalize(unsigned char hash[OUTPUT_SIZE])
+     auto exps = runSimulation(inHashNibbles);
+     auto hasher = CSHA256().Write(inHash.data(), inHash.size());
+ 
+-    // TODO: May be faster with a single array write
+     std::size_t zeroes = 0;
++
+     for (auto exp : exps) {
+         auto fixedExp{fixedFloat{exp}.raw_value()};
+         unsigned char byte;
++
+         for (size_t i{0}; i < sizeof(fixedExp); ++i) {
+-            // Little endian representation
+             byte = static_cast<unsigned char>(fixedExp);
+-            if (byte == 0) ++zeroes;
++
++            if (byte == 0)
++                ++zeroes;
++
+             hasher.Write(&byte, 1);
+             fixedExp >>= std::numeric_limits<unsigned char>::digits;
+         }
+     }
+ 
+-    if (rules == QHashRules::TimeGated &&
+-        ((zeroes == nQubits * sizeof(fixedFloat) && nTime >= 1753105444) ||
+-         (zeroes >= nQubits * sizeof(fixedFloat) * 3 / 4 && nTime >= 1753305380) ||
+-         (zeroes >= nQubits * sizeof(fixedFloat) * 1 / 4 && nTime >= 1754220531))) {
++    if (rules == QHashRules::TimeGated && ((zeroes == nQubits * sizeof(fixedFloat) && nTime >= 1753105444) ||
++        (zeroes >= nQubits * sizeof(fixedFloat) * 3 / 4 && nTime >= 1753305380) ||
++        (zeroes >= nQubits * sizeof(fixedFloat) * 1 / 4 && nTime >= 1754220531))) {
+         for (std::size_t i = 0; i < OUTPUT_SIZE; ++i)
+             hash[i] = 255;
+         return;
+@@ -172,17 +165,6 @@ void QHash::Finalize(unsigned char hash[OUTPUT_SIZE])
+ QHash& QHash::Reset()
+ {
+     ctx.Reset();
+-    HANDLE_CUSTATEVEC_ERROR(custatevecInitializeStateVector(handle, dStateVec, CUDA_C_64F,
+-                                                            nQubits,
+-                                                            CUSTATEVEC_STATE_VECTOR_TYPE_ZERO));
++    resetStateVector();
+     return *this;
+ }
+-
+-QHash::~QHash()
+-{
+-    custatevecDestroy(handle);
+-
+-    cudaFree(dStateVec);
+-
+-    if (extraSize) cudaFree(extra);
+-}
+\ No newline at end of file
+diff --git a/src/crypto/qhash.h b/src/crypto/qhash.h
+index 8b9ab10bf..14abd1150 100644
+--- a/src/crypto/qhash.h
++++ b/src/crypto/qhash.h
+@@ -3,19 +3,12 @@
+ 
+ #include <crypto/fpm/fixed.hpp>
+ #include <crypto/sha256.h>
++#include <array>
++#include <complex>
+ #include <cstdint>
+-#include <cuComplex.h>
+-#include <custatevec.h>
+-
+-/**
+- * TimeGated applies the timestamp-activated rule changes (task 0). Current always uses the
+- * current circuit and never replaces the digest with the degenerate all-ones value, so the
+- * hash stays unique for tasks whose acceptance does not depend on it.
+- */
+-enum class QHashRules {
+-    TimeGated,
+-    Current,
+-};
++#include <vector>
++
++enum class QHashRules { TimeGated, Current };
+ 
+ class QHash
+ {
+@@ -23,18 +16,25 @@ private:
+     const uint32_t nTime;
+     const QHashRules rules;
+     CSHA256 ctx;
+-    custatevecHandle_t handle; // TODO: should probably be a singleton
+-    cuDoubleComplex* dStateVec;
+-    std::size_t extraSize;
+-    void* extra;
+ 
+     static const size_t nQubits = 16;
+     static const size_t nLayers = 2;
++    static const size_t stateVecSize = (size_t{1} << nQubits);
+ 
+     using fixedFloat = fpm::fixed<int16_t, int32_t, 15>;
++    using Complex = std::complex<double>;
++
++    std::vector<Complex> stateVec;
+ 
+-    std::array<double, nQubits> runSimulation(const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data);
+-    void runCircuit(const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data);
++    void resetStateVector();
++    void applyPauliYRotation(double theta, size_t qubit);
++    void applyPauliZRotation(double theta, size_t qubit);
++    void applyCNOT(size_t control, size_t target);
++
++    std::array<double, nQubits> runSimulation(
++        const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data);
++    void runCircuit(
++        const std::array<unsigned char, 2 * CSHA256::OUTPUT_SIZE>& data);
+     std::array<double, nQubits> getExpectations();
+ 
+ public:
+@@ -44,19 +44,22 @@ public:
+     QHash& Write(const unsigned char* data, size_t len);
+     void Finalize(unsigned char hash[OUTPUT_SIZE]);
+     QHash& Reset();
+-    ~QHash();
++    ~QHash() = default;
+ };
+ 
+ template <size_t N>
+-std::array<unsigned char, 2 * N> splitNibbles(const std::array<unsigned char, N>& input)
++std::array<unsigned char, 2 * N> splitNibbles(
++    const std::array<unsigned char, N>& input)
+ {
+     std::array<unsigned char, 2 * N> output;
+     static const unsigned char nibbleMask = 0xF;
++
+     for (size_t i = 0; i < N; ++i) {
+         output[2 * i] = (input[i] >> 4) & nibbleMask;
+         output[2 * i + 1] = input[i] & nibbleMask;
+     }
++
+     return output;
+ }
+ 
+-#endif
+\ No newline at end of file
++#endif
